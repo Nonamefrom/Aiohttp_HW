@@ -1,31 +1,40 @@
-import requests
+import asyncio
 
-# response = requests.post(
-#     "http://127.0.0.1:5000/advertisement",
-#     json={
-#     "heading": "Продам машину свою",
-#     "description": "Классика на 13 бубликах",
-#     "owner": "Михеев и Павлов +91239876543"
-#     }
-#     )
-# print(response.status_code)
-# print(response.json())
-
-# response = requests.get(
-#     "http://127.0.0.1:5000/advertisement/12"
-#     )
-# print(response.status_code)
-# print(response.json())
+import aiohttp
 
 
-# response = requests.delete(
-#     "http://127.0.0.1:5000/advertisement/12",
-# )
-# print(response.status_code)
-# print(response.json())
+async def main():
 
-# response = requests.get(
-#     "http://127.0.0.1:5000/advertisement/12",
-# )
-# print(response.status_code)
-# print(response.json())
+    async with aiohttp.ClientSession() as session:
+        # response = await session.post(
+        #     "http://127.0.0.1:8080/advertisement",
+        #     json={
+        #       "heading": "Продам машину Nexia",
+        #       "description": "Классика на 13 бубликах",
+        #       "owner": "Михеев и Павлов +9120007653"
+        #     }
+        # )
+        # print(response.status)
+        # print(await response.json())
+
+        # response = await session.get(
+        #     "http://127.0.0.1:8080/advertisement/1",
+        # )
+        # print(response.status)
+        # print(await response.json())
+
+
+        response = await session.delete(
+            "http://127.0.0.1:8080/advertisement/1",
+        )
+        print(response.status)
+        print(await response.json())
+
+        response = await session.get(
+            "http://127.0.0.1:8080/advertisement/1",
+        )
+        print(response.status)
+        print(await response.json())
+
+
+asyncio.run(main())

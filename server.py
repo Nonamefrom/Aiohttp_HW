@@ -1,113 +1,92 @@
-from typing import Union
+import json
 
-from flask import Flask, jsonify, request
-from flask.views import MethodView
-from flask_bcrypt import Bcrypt
-from pydantic import ValidationError
-from sqlalchemy.exc import DisconnectionError, IntegrityError
+from aiohttp import web
+from sqlalchemy.exc import IntegrityError
 
-from models import Session, Advertisement
-from shema import CreateAdvertisement, DeleteAdvertisement
+from models import Session, Advertisement, close_orm, init_orm
 
-app = Flask("advertisements")
-bcrypt = Bcrypt(app)
+app = web.Application()
 
 
-class HttpError(Exception):
-
-    def __init__(self, status_code, message):
-        self.status_code = status_code
-        self.message = message
-
-
-@app.errorhandler(HttpError)
-def error_handler(error: HttpError):
-    response = jsonify({"error": error.message})
-    response.status_code = error.status_code
-    return response
+async def orm_context(app: web.Application):
+    print("START")
+    await init_orm()
+    yield
+    await close_orm()
+    print("FINISH")
 
 
-def validate(schema_cls: type[CreateAdvertisement], json_data):
-    try:
-        return schema_cls(**json_data).dict(exclude_unset=True)
-    except ValidationError as err:
-        errors = err.errors()
-        for error in errors:
-            error.pop("ctx", None)
-        raise HttpError(400, errors)
+@web.middleware
+async def session_middleware(request: web.Request, handler):
+    async with Session() as session:
+        request.session = session
+        result = await handler(request)
+        return result
 
 
-@app.before_request
-def before_requests():
-    session = Session()
-    request.session = session
+app.cleanup_ctx.append(orm_context)
+app.middlewares.append(session_middleware)
 
 
-@app.after_request
-def after_request(http_response):
-    request.session.close()
-    return http_response
+def get_http_error(error_cls, message):
+    message = {"error": message}
+    message = json.dumps(message)
+    error = error_cls(text=message, content_type="application/json")
+    raise error
 
 
-# def add_Advertisement(advertisement):
-#     request.session.add(advertisement)
-#     try:
-#         request.session.commit()
-#     except IntegrityError as er:
-#         raise HttpError(409, "Advertisement already exist")
-
-def add_Advertisement(advertisement):
-    existing_advertisement = (
-        request.session.query(Advertisement)
-        .filter_by(
-            heading=advertisement.heading,
-            description=advertisement.description,
-            owner=advertisement.owner
-        )
-        .first()
-    )
-    if existing_advertisement is not None:
-        raise HttpError(409, "Advertisement with the same heading, description, and owner already exists")
-    request.session.add(advertisement)
-    try:
-        request.session.commit()
-    except IntegrityError:
-        raise HttpError(409, "Error saving Advertisement to the database")
-
-
-def get_Advertisement_by_id(advertisement_id) -> Advertisement:
-    advertisement = request.session.get(Advertisement, advertisement_id)
+async def get_advertisement_by_id(advertisement_id: int, session: Session) -> Advertisement:
+    advertisement = await session.get(Advertisement, advertisement_id)
     if advertisement is None:
-        raise HttpError(404, "Advertisement not found")
+        raise get_http_error(web.HTTPNotFound, "Advertisement not found")
     return advertisement
 
 
-class AdvertisementView(MethodView):
-    def get(self, advertisement_id: int):
-        advertisement = get_Advertisement_by_id(advertisement_id)
-        return jsonify(advertisement.dict)
-
-    def post(self):
-        json_data = validate(CreateAdvertisement, request.json)
-        advertisement = Advertisement(
-            heading=json_data["heading"],
-            description=json_data["description"],
-            owner=json_data["owner"]
-        )
-        add_Advertisement(advertisement)
-        return jsonify(advertisement.dict)
-
-    def delete(self, advertisement_id: int):
-        advertisement = get_Advertisement_by_id(advertisement_id)
-        request.session.delete(advertisement)
-        request.session.commit()
-        return jsonify({"status": "deleted"})
+async def delete_advertisement(advertisement: Advertisement, session: Session):
+    await session.delete(advertisement)
+    await session.commit()
 
 
-Advertisement_view = AdvertisementView.as_view("Advertisement")
+async def add_advertisement(advertisement: Advertisement, session: Session):
+    session.add(advertisement)
+    try:
+        await session.commit()
+    except IntegrityError as err:
+        raise get_http_error(web.HTTPConflict, "Advertisement already exists")
 
-app.add_url_rule(
-    "/advertisement/<int:advertisement_id>", view_func=Advertisement_view, methods=["GET", "DELETE"]
+
+class AdvertisementView(web.View):
+
+    @property
+    def advertisement_id(self) -> int:
+        return int(self.request.match_info["advertisement_id"])
+
+    @property
+    def session(self) -> Session:
+        return self.request.session
+
+    async def get(self):
+        advertisement = await get_advertisement_by_id(self.advertisement_id, self.session)
+        return web.json_response(advertisement.dict)
+
+    async def post(self):
+        data = await self.request.json()
+        advertisement = Advertisement(**data)
+        await add_advertisement(advertisement, self.session)
+        return web.json_response(advertisement.dict_id)
+
+    async def delete(self):
+        advertisement = await get_advertisement_by_id(self.advertisement_id, self.session)
+        await delete_advertisement(advertisement, self.session)
+        return web.json_response({"status": "success"})
+
+
+app.add_routes(
+    [
+        web.post(r"/advertisement", AdvertisementView),
+        web.get(r"/advertisement/{advertisement_id:\d+}", AdvertisementView),
+        web.delete(r"/advertisement/{advertisement_id:\d+}", AdvertisementView),
+    ]
 )
-app.add_url_rule("/advertisement", view_func=Advertisement_view, methods=["POST"])
-app.run()
+
+web.run_app(app)
